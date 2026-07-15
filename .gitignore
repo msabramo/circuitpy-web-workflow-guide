@@ -1,0 +1,3 @@
+# local scratch
+*.local
+.DS_Store
