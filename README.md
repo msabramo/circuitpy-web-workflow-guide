@@ -138,23 +138,64 @@ Any Linux machine that can mount USB storage works. (An old Raspberry Pi is grea
 
 ---
 
-## Step 4 — Power the board *without* a USB data host
+## Step 4 — Make the filesystem writable over WiFi
 
-This is the subtle bit. **Web workflow can only write the filesystem when no USB host owns it.**
-If you plug the board into your computer, web workflow goes **read-only** and you'll see:
+This is the subtle part, and it trips everyone up. **Web workflow can only write the
+filesystem when USB Mass Storage is *disabled* on the board.** The board's own error dialog
+says it plainly:
 
-> USB is using the storage. Only allowing reads. Try ejecting the CIRCUITPY drive.
+> The board's filesystem is in read-only mode for web workflow. This happens whenever USB
+> Mass Storage is enabled on the board (the default for most CircuitPython boards),
+> **whether or not a host computer is actively using it.**
 
-So power the board from something that isn't a data host:
+So it is **not** enough to unplug from your computer, or to power it from a charger — by
+default the board still *exposes* CIRCUITPY as a USB drive, which keeps web workflow
+read-only. Writes fail with:
 
-- a **USB wall charger** / power brick, or
-- a battery pack.
+- editor: *"Could not save '/code.py'. The board's filesystem is in read-only mode…"*
+- `curl` PUT: `HTTP 409 Conflict` with body `USB storage active.`
+- (a plain `HTTP 500` on PUT is the older CircuitPython phrasing of the same thing)
 
-(Ironically, a charge-only cable into a charger is perfect here — power, no data.)
+### The fix: a dual-mode `boot.py`
 
-> **Alternative if you must keep it on a data port:** create `boot.py` on the board with
-> `import storage; storage.remount("/", readonly=False)`. That makes CircuitPython own the
-> filesystem and the USB host read-only. Not needed if you power it from a charger.
+Disable USB Mass Storage from `boot.py` so web workflow can write — but do it
+**conditionally**, so you *keep* the ability to mount CIRCUITPY on a real computer when you
+want to. The trick is `supervisor.runtime.usb_connected`, which is `True` only when a USB
+**data host** is attached (a computer), and `False` on a power-only charger:
+
+```python
+# boot.py
+import supervisor
+import storage
+
+# On a real USB data host (your home computer): leave USB storage ENABLED
+#   -> CIRCUITPY mounts as a drive, edit it normally.
+# On charger / no data host: DISABLE USB storage
+#   -> web workflow can write over WiFi.
+if not supervisor.runtime.usb_connected:
+    storage.disable_usb_drive()
+```
+
+Result — the best of both worlds:
+
+| Powered by | `usb_connected` | USB drive | How you edit |
+|---|---|---|---|
+| A computer (home Mac/PC, or the Linux bootstrap box) | `True` | mounts | drag files onto CIRCUITPY |
+| A wall charger / battery | `False` | hidden | web workflow (WiFi) is writable |
+
+**Chicken-and-egg again:** web workflow can't write `boot.py` while it's read-only, and a
+locked Mac can't mount the drive — so write `boot.py` the same way you wrote `settings.toml`
+(the Linux-box bootstrap in Step 3). `boot.py` only takes effect **after a reboot**, so
+reset / power-cycle the board (on charger power) once it's in place.
+
+> **Simpler but blunter alternative:** an unconditional `import storage;
+> storage.disable_usb_drive()` also makes web workflow writable — but then CIRCUITPY will
+> **never** mount over USB again (even on your home computer) until you remove `boot.py`.
+> Prefer the conditional version above unless you truly never want the USB drive.
+
+> **Note on `board.DISPLAY`/button variants:** some guides gate this on holding a button at
+> boot (e.g. `board.D0` / the BOOT button) instead of `usb_connected`. Either works; the
+> `usb_connected` approach needs no button press.
 
 ---
 
@@ -187,6 +228,19 @@ DHCP may hand the board a different address after a reboot. To keep the IP stabl
 **DHCP reservation** for the board's MAC in your router. Then `http://<BOARD_IP>/` and the
 commands below always work.
 
+### Optional: a friendly name via `/etc/hosts`
+
+Once the IP is reserved, you can give the board a short name that doesn't depend on mDNS
+at all (handy when `.local` lookups are slow). Add a line to `/etc/hosts`:
+
+```
+<BOARD_IP>   metro circuitpy
+```
+
+Then `http://metro/` just works. **Avoid using a `.local` name here** — that suffix is
+reserved for mDNS/Bonjour, and macOS may ignore your `/etc/hosts` entry for it. Pick a
+plain name instead.
+
 ---
 
 ## Everyday use — no browser required
@@ -203,6 +257,69 @@ curl -s -u :<WEB_PASSWORD> http://<BOARD_IP>/fs/
 # Install/update libraries with no USB mount at all
 circup --host <BOARD_IP> --password <WEB_PASSWORD> install <library>
 ```
+
+### Make `circup` less verbose to invoke
+
+`circup` reads the web password from the environment variable
+`CIRCUP_WEBWORKFLOW_PASSWORD`, so you only have to pass `--host`. Wrap that in a shell
+alias and you type neither:
+
+```bash
+# ~/.zshrc (or ~/.bashrc)
+export CIRCUP_WEBWORKFLOW_PASSWORD="<WEB_PASSWORD>"
+alias mcircup='circup --host <BOARD_IP>'      # or --host metro if you added /etc/hosts
+```
+
+Then: `mcircup list`, `mcircup install neopixel`, `mcircup update`. (Each run refreshes the
+library bundles from GitHub, which is most of the couple-second runtime — not the board.)
+
+---
+
+## Test it — a quick demo
+
+A satisfying, dependency-light test on a board with an onboard NeoPixel (e.g. Metro
+ESP32-S3): install the library over WiFi, then push a rainbow.
+
+```bash
+mcircup install neopixel      # installs neopixel + adafruit_pixelbuf over WiFi, no mount
+```
+
+Then save this as `code.py` (via the web editor, or `curl -T`); the board auto-reloads and
+the onboard pixel cycles colors:
+
+```python
+import time
+import board
+import neopixel
+
+pixel = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.2, auto_write=True)
+
+def wheel(pos):
+    if pos < 85:
+        return (pos * 3, 255 - pos * 3, 0)
+    if pos < 170:
+        pos -= 85
+        return (255 - pos * 3, 0, pos * 3)
+    pos -= 170
+    return (0, pos * 3, 255 - pos * 3)
+
+i = 0
+while True:
+    pixel[0] = wheel(i % 255)
+    i = (i + 5) % 255
+    time.sleep(0.1)      # keep this modest — see note below
+```
+
+> **Don't use a WiFi scan as your "hello world."** `wifi.radio.start_scanning_networks()`
+> takes the radio off your access point while it scans, which **drops the web-workflow
+> connection** ("device not found"). Reset to recover. Pick a demo that doesn't touch the
+> radio.
+
+> **Keep animation loops modest.** These boards are single-core; a tight
+> `while True: ... time.sleep(0.01)` (~100 Hz) starves the WiFi/web-workflow stack and makes
+> the editor and `circup` slow/flaky. `time.sleep(0.1)` (~10 Hz) looks just as smooth and
+> leaves plenty of CPU for networking. If you want the editor maximally responsive, keep
+> `code.py` idle (e.g. a `print`) and run animations only on demand.
 
 ---
 
@@ -221,6 +338,8 @@ you used for bootstrapping (or flash the `.bin` with `esptool`). Don't chase pre
 |---|---|
 | Board looks completely dead, no serial device | Charge-only cable — swap for a data cable. |
 | Web workflow is read-only ("USB is using the storage") | Board is on a USB data host — power it from a charger instead. |
+| File writes fail with HTTP 500 (empty body); reads/`version.json` still work | Same read-only cause — board is on a USB data host. Move it to charger power so the board owns its filesystem. |
+| Board vanishes from the network right after running code | Your code called `wifi.radio.start_scanning_networks()` — scanning drops the board off its access point, which kills the web-workflow connection ("device not found"). Don't scan on a board you manage over WiFi. Reset/power-cycle to recover. |
 | `storage.remount` → "Cannot remount path when visible via USB" | Expected while on USB; use the Linux-box bootstrap (Step 3). |
 | `wifi.radio.ipv4_address` is `None` | Wrong SSID/password, or a 5 GHz-only network — the board is 2.4 GHz. |
 | `.local` name slow or failing | mDNS first-lookup lag; use the raw IP, ideally a reserved one. |
