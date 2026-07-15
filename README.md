@@ -341,10 +341,50 @@ you used for bootstrapping (or flash the `.bin` with `esptool`). Don't chase pre
 
 ---
 
+## Gotcha: corporate VPNs (GlobalProtect, etc.)
+
+This one is almost guaranteed to bite the exact audience for this guide — if your Mac is
+locked down by MDM, it's very likely *also* configured with a corporate VPN. Many corporate
+VPNs run in **full-tunnel** mode: they install a default route that sends **all** traffic —
+including packets destined for your **local** network — up the corporate tunnel. Your board
+lives on your LAN (e.g. `192.168.4.x`), so once the VPN is connected, requests to the board
+go up the tunnel instead of to your LAN and it becomes unreachable. Web workflow, `circup`,
+`wwshell`, and plain `curl` all fail with "device not found" / connection timeouts.
+
+**Diagnose it** — check where traffic to the board is actually routed (macOS):
+
+```bash
+route -n get <BOARD_IP> | grep interface
+```
+
+- `interface: utun*` (or your VPN's interface) → the **VPN is capturing the route**. That's it.
+- `interface: en0` / `en1` (your Wi-Fi/Ethernet) → routing is fine; look elsewhere.
+
+**Fixes, easiest first:**
+
+1. **Disconnect the VPN** while working on the board. Simplest and always works.
+2. **Split tunnel** — if your org's policy excludes RFC-1918 LAN ranges, the board stays
+   reachable on VPN. Usually not user-configurable on a managed machine.
+3. **Manual host route** — worth a try, but often doesn't stick:
+   ```bash
+   sudo route -n add -host <BOARD_IP> -interface en0   # send just the board via LAN
+   # undo later: sudo route delete -host <BOARD_IP>
+   ```
+   The route may take effect for a few seconds and then **silently revert** — full-tunnel
+   clients like GlobalProtect actively monitor the routing table and re-assert their own
+   routes (and some enforce a driver-level kill switch). Verify with
+   `route -n get <BOARD_IP>` a few seconds later; if it's back on `utun*`, this approach
+   won't work for you — use option 1 or 4.
+4. **Work from a device that isn't on the VPN** — your phone's browser, or SSH into the
+   Linux bootstrap box and run `wwshell`/`curl` from there (it's on the LAN, no VPN).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
+| Board unreachable right after connecting a corporate VPN | Full-tunnel VPN is routing LAN traffic up the tunnel. `route -n get <BOARD_IP>` shows a `utun*` interface. Disconnect the VPN or add a host route (see the VPN section above). |
 | Board looks completely dead, no serial device | Charge-only cable — swap for a data cable. |
 | Web workflow is read-only ("USB is using the storage") | Board is on a USB data host — power it from a charger instead. |
 | File writes fail with HTTP 500 (empty body); reads/`version.json` still work | Same read-only cause — board is on a USB data host. Move it to charger power so the board owns its filesystem. |
