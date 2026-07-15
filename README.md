@@ -1,8 +1,13 @@
 # Editing CircuitPython over WiFi when your Mac can't mount USB storage
 
 Some managed / MDM-locked Macs are configured so they **cannot mount USB mass-storage
-devices**. That breaks the normal CircuitPython workflow, where you edit `code.py` by
-dragging files onto the `CIRCUITPY` drive that the board presents over USB.
+devices**. ("MDM" = Mobile Device Management — the remote management used to enforce policy
+on company- or government-issued machines. Macs in **corporate, enterprise, or government
+environments** are commonly locked down this way for security, and blocking USB storage —
+to prevent data exfiltration and malware from USB drives — is a typical part of that.)
+
+That breaks the normal CircuitPython workflow, where you edit `code.py` by dragging files
+onto the `CIRCUITPY` drive that the board presents over USB.
 
 This guide shows how to sidestep that entirely using **CircuitPython Web Workflow** —
 editing your board's files over WiFi from a browser, plus `circup` and `curl` over the
@@ -315,11 +320,15 @@ while True:
 > connection** ("device not found"). Reset to recover. Pick a demo that doesn't touch the
 > radio.
 
-> **Keep animation loops modest.** These boards are single-core; a tight
-> `while True: ... time.sleep(0.01)` (~100 Hz) starves the WiFi/web-workflow stack and makes
-> the editor and `circup` slow/flaky. `time.sleep(0.1)` (~10 Hz) looks just as smooth and
-> leaves plenty of CPU for networking. If you want the editor maximally responsive, keep
-> `code.py` idle (e.g. a `print`) and run animations only on demand.
+> **Keep animation loops modest — but `time.sleep(0.1)` is the sweet spot; don't chase
+> more.** These boards are single-core; a tight `while True: ... time.sleep(0.01)` (~100 Hz)
+> starves the WiFi/web-workflow stack and makes the editor and `circup` slow/flaky. Dropping
+> to `time.sleep(0.1)` (~10 Hz) fixes it — the loop's CPU cost is negligible from there on.
+> I benchmarked `circup list` at `sleep(0.1)` vs `sleep(0.5)` (6 runs × 2 rounds each): the
+> medians were within ~0.1 s and the run-to-run *network* jitter (~1.6–2.8 s) dwarfed any
+> difference. So **going slower than 0.1 buys no measurable responsiveness** — it just makes
+> your animation choppier. Keep `sleep(0.1)`. If you want the editor *maximally* responsive,
+> keep `code.py` idle (e.g. a `print`) and run animations only on demand.
 
 ---
 
