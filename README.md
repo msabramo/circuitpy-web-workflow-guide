@@ -395,6 +395,19 @@ similar) is up** — the two VPNs run side by side. Verified: with GlobalProtect
 (default route on its `utun`), `curl https://<nas-tailscale-ip>:5001` still succeeds over
 Tailscale's separate `utun`.
 
+> ⚠️ **Reality check for managed Macs: your employer may block Tailscale on the work
+> machine.** Even if it installs and coexists with the corporate VPN at first, corporate
+> endpoint-security agents (CrowdStrike Falcon, VMware/Omnissa Workspace ONE, etc.) can
+> quarantine or **strip the Tailscale binary** per policy — in one real case, after a reboot
+> the App Store app was left with all its resource files but *no executable* ("damaged or
+> incomplete"), and a fresh reinstall was gutted the same way. Unsanctioned VPN/mesh tools are
+> exactly what DLP policies target, and **fighting endpoint security on a work machine is a
+> losing battle** (and may flag you to IT). If this happens to you, don't reinstall on the
+> work Mac. You can still get the benefit by running Tailscale **only on the jump host and a
+> *personal* device** (phone, home laptop) — reach the board from those, and keep the work
+> Mac to the "VPN off" path. The Tailscale-on-the-Mac transparency is a nice-to-have, not
+> load-bearing.
+
 Your board can't run Tailscale itself (it's a microcontroller), so you need an **always-on
 box on the board's LAN to act as a jump host / subnet router.** A **Synology NAS** (DSM has a
 one-click Tailscale package), a Raspberry Pi 4/5 or Zero 2 W, or any always-on Linux machine
@@ -406,7 +419,9 @@ modern kernel.)*
 1. **Install Tailscale on the Mac** — the **Mac App Store** build is cleanest on a managed
    Mac (the Homebrew cask can fail on a preinstall script bug; that's not MDM). At first
    launch it asks to *"add VPN configurations"* — click **Allow**. On a locked corporate Mac
-   this may or may not be permitted; if it activates alongside your corporate VPN, you're set.
+   this may or may not be permitted; if it activates alongside your corporate VPN, great — but
+   see the reality-check warning above: endpoint security may kill it later, so treat the Mac
+   client as optional and don't build your whole workflow assuming it will survive.
 2. **Install Tailscale on the jump host** (e.g. Synology **Package Center → Tailscale**), and
    sign both devices into the **same tailnet** (same identity provider + account — an easy
    thing to get wrong).
@@ -469,6 +484,7 @@ contest entirely.
 | Web server not starting at all | Missing `CIRCUITPY_WEB_API_PASSWORD` in `settings.toml`. |
 | `curl http://<board>/fs/` prints binary garbage | The `/fs/` endpoint content-negotiates — add `-H 'Accept: application/json'` for a clean listing. |
 | Tailscale won't install on your Pi / SBC | Needs armv7+/arm64 and a modern kernel; an original armv6 Pi or an EOL OS (e.g. Raspbian wheezy) can't run it. Use a NAS, newer Pi, or any modern Linux box as the jump host. |
+| Tailscale.app on the work Mac shows "damaged or incomplete" / has no executable | Corporate endpoint security likely stripped the binary (see the reality-check warning in the Tailscale section). Don't fight it — run Tailscale on the jump host + a personal device instead, and keep the work Mac to the VPN-off path. |
 
 ---
 
