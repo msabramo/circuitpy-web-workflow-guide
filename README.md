@@ -378,6 +378,80 @@ route -n get <BOARD_IP> | grep interface
 4. **Work from a device that isn't on the VPN** — your phone's browser, or SSH into the
    Linux bootstrap box and run `wwshell`/`curl` from there (it's on the LAN, no VPN).
 
+For a permanent, transparent fix, see the next section.
+
+---
+
+## The real fix: reach the board through a Tailscale jump host
+
+If you're stuck behind a full-tunnel corporate VPN and toggling it off constantly is
+annoying, the clean solution is a second, *coexisting* VPN that your corporate client
+doesn't interfere with: **[Tailscale](https://tailscale.com)** (a WireGuard mesh).
+
+The key insight: **Tailscale's `100.x.y.z` (CGNAT) address range routes over its own
+interface (`utun*`), which does not collide with the corporate VPN's routes.** So a
+Tailscale-connected Mac can reach a Tailscale-connected device **even while GlobalProtect (or
+similar) is up** — the two VPNs run side by side. Verified: with GlobalProtect active
+(default route on its `utun`), `curl https://<nas-tailscale-ip>:5001` still succeeds over
+Tailscale's separate `utun`.
+
+Your board can't run Tailscale itself (it's a microcontroller), so you need an **always-on
+box on the board's LAN to act as a jump host / subnet router.** A **Synology NAS** (DSM has a
+one-click Tailscale package), a Raspberry Pi 4/5 or Zero 2 W, or any always-on Linux machine
+works. *(An ancient armv6 Pi or a wheezy-era OS won't — Tailscale needs armv7+/arm64 and a
+modern kernel.)*
+
+### Setup
+
+1. **Install Tailscale on the Mac** — the **Mac App Store** build is cleanest on a managed
+   Mac (the Homebrew cask can fail on a preinstall script bug; that's not MDM). At first
+   launch it asks to *"add VPN configurations"* — click **Allow**. On a locked corporate Mac
+   this may or may not be permitted; if it activates alongside your corporate VPN, you're set.
+2. **Install Tailscale on the jump host** (e.g. Synology **Package Center → Tailscale**), and
+   sign both devices into the **same tailnet** (same identity provider + account — an easy
+   thing to get wrong).
+3. Each device gets a stable `100.x` address (see them at
+   [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines)). Enable
+   **MagicDNS** if you want to use names instead of `100.x` IPs.
+
+### Two ways to use it
+
+**A — Jump host (recommended; immune to the route fight).** SSH into the jump host over its
+`100.x` address and run the board commands *there* (it reaches the board over plain LAN):
+
+```bash
+# ~/.ssh/config
+Host nas
+    HostName 100.x.y.z          # the jump host's Tailscale IP (or its MagicDNS name)
+    User youruser
+
+# then, from the Mac — works with the corporate VPN connected:
+ssh nas "curl -sk -u :<WEB_PASSWORD> http://<BOARD_IP>/cp/version.json"
+```
+
+Wrap the common operations in shell helpers so deploying is one command from your desk:
+
+```bash
+# ~/.zshrc   (functions, not aliases — the /fs/ endpoint needs an explicit Accept header,
+#             or it returns gzipped bytes that print as garbage)
+metro-info() { ssh nas "curl -sk -u :<WEB_PASSWORD> http://<BOARD_IP>/cp/version.json" | python3 -m json.tool; }
+metro-ls()   { ssh nas "curl -sk -u :<WEB_PASSWORD> -H 'Accept: application/json' http://<BOARD_IP>/fs${1:-/}" | python3 -m json.tool; }
+metro-push() { ssh nas "curl -sk -u :<WEB_PASSWORD> -T - 'http://<BOARD_IP>/fs/${1:t}'" < "$1" && echo "pushed $1"; }
+```
+
+`metro-ls` conveniently reports `"writable": true/false`, so you can tell at a glance whether
+the board (see the dual-mode `boot.py` above) will accept a push.
+
+**B — Subnet router (transparent, but may lose the route fight).** Configure the jump host to
+advertise the board's LAN to your tailnet (`tailscale up --advertise-routes=192.168.x.0/24`,
+then approve the route in the admin console). The Mac can then hit `<BOARD_IP>` directly — but
+a full-tunnel corporate VPN may still win that subnet's route. Advertising a `/32` for just
+the board sometimes beats the broader route; if not, fall back to **A**, which sidesteps the
+contest entirely.
+
+> **Bonus:** put Tailscale on your **phone** too — then you can reach the board (via the
+> subnet router / jump host) from anywhere, no corporate VPN involved at all.
+
 ---
 
 ## Troubleshooting
@@ -393,6 +467,8 @@ route -n get <BOARD_IP> | grep interface
 | `wifi.radio.ipv4_address` is `None` | Wrong SSID/password, or a 5 GHz-only network — the board is 2.4 GHz. |
 | `.local` name slow or failing | mDNS first-lookup lag; use the raw IP, ideally a reserved one. |
 | Web server not starting at all | Missing `CIRCUITPY_WEB_API_PASSWORD` in `settings.toml`. |
+| `curl http://<board>/fs/` prints binary garbage | The `/fs/` endpoint content-negotiates — add `-H 'Accept: application/json'` for a clean listing. |
+| Tailscale won't install on your Pi / SBC | Needs armv7+/arm64 and a modern kernel; an original armv6 Pi or an EOL OS (e.g. Raspbian wheezy) can't run it. Use a NAS, newer Pi, or any modern Linux box as the jump host. |
 
 ---
 
@@ -401,6 +477,7 @@ route -n get <BOARD_IP> | grep interface
 - [CircuitPython Web Workflow — Adafruit Learn](https://learn.adafruit.com/getting-started-with-web-workflow-using-the-code-editor)
 - [`circup`](https://github.com/adafruit/circup)
 - [CircuitPython downloads](https://circuitpython.org/downloads)
+- [Tailscale](https://tailscale.com/) · [subnet routers](https://tailscale.com/kb/1019/subnets) · [Synology package](https://tailscale.com/kb/1131/synology)
 
 ---
 
